@@ -164,6 +164,8 @@ Each enabled destination gets one message in its native shape.
 | Slack: `not_in_channel` | Bot isn't a member of `SLACK_ALERT_CHANNEL` | `/invite @<bot>` in that channel, or add `chat:write.public` and reinstall |
 | Slack: `channel_not_found` | Wrong name in `.env` | Use the human-readable name without `#` |
 | Discord: 401 on webhook URL | URL was rotated or deleted | Recreate the webhook on the channel |
+| Discord: 429 Too Many Requests | Discord rate-limits each webhook to ~30 msg/min (with a tighter ~5/2s burst). Repeated test runs or many fast Retell events will trip it. | Server logs `retry_after`. Slow down your tests, or add retry-with-backoff (sketched in `temp/improvements.md`). |
+| Mattermost: `ConnectError` from deployed service | Webhook URL points at `localhost`, which the deployed instance can't reach | Either skip `MATTERMOST_WEBHOOK_URL` on the deploy, or use Mattermost Cloud / public self-host |
 | Mattermost: `Webhooks have been disabled` | System Console toggle off | System Console → Integrations → enable Incoming Webhooks |
 | ClickUp: `Team not authorized` | Used a workspace ID where a task ID was needed | Open the task in ClickUp; the ID is the part after `/t/` in the URL |
 | ClickUp: `validateListIDEx List ID invalid` | List/task ID confusion | List IDs are numeric (e.g. `901614781100`); task IDs are alphanumeric (e.g. `86d2w7fxf`). This service uses task IDs |

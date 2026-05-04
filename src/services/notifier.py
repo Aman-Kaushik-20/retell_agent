@@ -1,6 +1,7 @@
 import asyncio
 
 from src.models.retell import CallObject, WebhookEventType
+from src.utils.logger import logger
 
 
 # Fan a single (event, call) out to every notifier concurrently.
@@ -13,7 +14,15 @@ async def fanout(notifiers, event: WebhookEventType, call: CallObject) -> dict[s
         *(n.send(event, call) for n in notifiers),
         return_exceptions=True,
     )
-    return {
-        n.name: "ok" if not isinstance(r, Exception) else f"error: {type(r).__name__}: {r}"
-        for n, r in zip(notifiers, results)
-    }
+
+    delivered = {}
+    for n, r in zip(notifiers, results):
+        if isinstance(r, Exception):
+            logger.error(
+                f"Notifier failed | provider={n.name} call_id={call.call_id} "
+                f"event={event.value} error={r!r}"
+            )
+            delivered[n.name] = f"error: {type(r).__name__}: {r}"
+        else:
+            delivered[n.name] = "ok"
+    return delivered

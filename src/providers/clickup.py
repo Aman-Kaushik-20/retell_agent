@@ -70,4 +70,10 @@ class ClickUpProvider:
         }
         logger.info(f"ClickUp post | call_id={call.call_id} event={event.value} task={self.task_id}")
         response = await self.client.post(f"/task/{self.task_id}/comment", json=payload)
+        if response.status_code >= 400:
+            # ClickUp returns {"err":"...","ECODE":"..."} — log it so misconfigurations are obvious.
+            logger.error(
+                f"ClickUp post failed | call_id={call.call_id} task={self.task_id} "
+                f"status={response.status_code} body={response.text[:500]}"
+            )
         response.raise_for_status()

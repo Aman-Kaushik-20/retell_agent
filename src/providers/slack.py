@@ -35,6 +35,11 @@ class SlackProvider:
             "/chat.postMessage", json=message.model_dump(exclude_none=True)
         )
         response.raise_for_status()
+        # Slack always returns HTTP 200 — real errors come back as `ok: false` in the body.
         result = SlackResponse.model_validate(response.json())
         if not result.ok:
+            logger.error(
+                f"Slack post rejected | call_id={call.call_id} channel={self.channel} "
+                f"error={result.error}"
+            )
             raise RuntimeError(f"Slack API error: {result.error}")

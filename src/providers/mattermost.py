@@ -33,4 +33,9 @@ class MattermostProvider:
 
         logger.info(f"Mattermost post | call_id={call.call_id} event={event.value}")
         response = await self.client.post(self.webhook_url, json=payload)
+        if response.status_code >= 400:
+            logger.error(
+                f"Mattermost post failed | call_id={call.call_id} "
+                f"status={response.status_code} body={response.text[:500]}"
+            )
         response.raise_for_status()

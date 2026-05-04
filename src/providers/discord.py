@@ -110,4 +110,12 @@ class DiscordProvider:
 
         logger.info(f"Discord post | call_id={call.call_id} event={event.value}")
         response = await self.client.post(self.webhook_url, json=payload)
+        if response.status_code >= 400:
+            # Surface Discord's response (rate-limit headers + JSON error body)
+            # so the server log makes the cause obvious.
+            retry_after = response.headers.get("x-ratelimit-reset-after") or response.headers.get("retry-after")
+            logger.error(
+                f"Discord post failed | call_id={call.call_id} status={response.status_code} "
+                f"retry_after={retry_after} body={response.text[:500]}"
+            )
         response.raise_for_status()
