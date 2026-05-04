@@ -1,132 +1,172 @@
 # Credentials Setup
 
-You need four things before the service can run:
+This service supports four notification providers. Set up only the ones you want — each is independent, and missing env vars silently disable that destination. `GET /health` reports which destinations are live.
 
-| Variable | Source |
+| Provider | Env vars |
 |---|---|
-| `RETELL_API_KEY` | Retell dashboard |
-| `RETELL_FROM_NUMBER` | An E.164 number imported into Retell (optional default for `POST /calls`) |
-| `SLACK_BOT_TOKEN` | A Slack app you create |
-| `SLACK_ALERT_CHANNEL` | Slack workspace (the channel name without `#`) |
-
-This guide walks through getting each one. Total time: ~15 min.
-
----
-
-## 1. Slack — Create a bot and get the token
-
-We post alerts via Slack's `chat.postMessage` API, which needs a **Bot User OAuth Token** (`xoxb-…`) and a channel the bot belongs to.
-
-### 1.1 Create a Slack app
-
-1. Go to <https://api.slack.com/apps> and click **Create New App** → **From scratch**.
-2. Name it (e.g. `calling-agent-alerts`) and pick the workspace you want alerts in.
-
-![Slack: Create App "From scratch" dialog with app name and workspace picker](docs/img/slack-01-create-app.png)
-
-### 1.2 Add the `chat:write` bot scope
-
-1. A new Window Will Open. In the left sidebar, open **OAuth & Permissions**.
-
-![Slack: Create App "From scratch" dialog with app name and workspace picker](docs/img/slack-01-auth-page.png)
-
-2. Scroll to **Scopes → Bot Token Scopes** and click **Add an OAuth Scope**.
-3. Add `chat:write`.
-4. *(Optional, but convenient)* Add `chat:write.public` so the bot can post in public channels without being explicitly invited.
-
-![Slack: OAuth & Permissions → Bot Token Scopes showing chat:write added](docs/img/slack-02-scopes.png)
-
-### 1.3 Install the app to your workspace
-
-1. Scroll up on the same page and click **Install to Workspace** (or **Reinstall** if you've changed scopes).
-2. Approve the consent screen.
-3. After the redirect, copy the **Bot User OAuth Token** — it starts with `xoxb-`. This is your `SLACK_BOT_TOKEN`.
-
-![Slack: OAuth & Permissions → Bot User OAuth Token, "Copy" button highlighted](docs/img/slack-03-token.png)
-
-> **Treat the token like a password.** Never commit it. `.env` is already in `.gitignore`.
-
-### 1.4 Invite the bot to your alert channel
-
-1. In Slack, open the channel where alerts should land (e.g. `#alerts`).
-2. Type `/invite @<your-app-name>` and confirm.
-3. Note the **channel name without the `#`**. That's your `SLACK_ALERT_CHANNEL`.
-
-![Slack: /invite command in a channel adding the bot user](docs/img/slack-04-invite.png)
-
-> If you skipped `chat:write.public` and forget to invite the bot, posts will return `not_in_channel`.
+| Slack | `SLACK_BOT_TOKEN`, `SLACK_BASE_URL`, `SLACK_ALERT_CHANNEL` |
+| Discord | `DISCORD_WEBHOOK_URL` |
+| Mattermost | `MATTERMOST_WEBHOOK_URL` |
+| ClickUp | `CLICKUP_API_TOKEN`, `CLICKUP_TASK_ID` |
+| Retell (required) | `RETELL_API_KEY`, `RETELL_BASE_URL`, `RETELL_FROM_NUMBER` (optional) |
 
 ---
 
-## 2. Retell — Get the API key, import a number, and pick an agent
+## 1. Retell — get the API key
 
-### 2.1 Sign in and grab the API key
-
-1. Go to <https://dashboard.retellai.com> and sign in (or sign up).
-2. Open **API Keys** in the dashboard.
-3. Click **Create API Key**, name it (e.g. `local-dev`), and copy the value. This is your `RETELL_API_KEY`.
-
-> Retell may only show the key **once**. Save it immediately. If you lose it, revoke and create a new one.
-
-### 2.2 Import / purchase a phone number
-
-Retell requires `from_number` on every call, and that number must be one you've imported or purchased through Retell.
-
-1. Open **Phone Numbers** in the dashboard.
-2. Either **Buy a number** (US only on the Retell-purchased path) or **Import** a Twilio / SIP number you already own.
-3. Note the number in **E.164** format (e.g. `+14157774444`). This is your `RETELL_FROM_NUMBER`.
-
-### 2.3 Create or pick an agent
-
-You can either bind an agent to your `from_number` (default behaviour — no override needed) or pin a specific agent per call via `override_agent_id`.
-
-1. Open **Agents** in the dashboard.
-2. Either create a new agent (set a voice, prompt, response engine, etc.) or open an existing one.
-3. Copy the agent's ID from the URL or the agent details panel — e.g. `oBeDLoLOeuAbiuaMFXRtDOLriTJ5tSxD`.
-
-You'll pass this ID in the `override_agent_id` field of `POST /calls` when you want to override the agent bound to your number.
-
-### 2.4 (Optional) Wire up the webhook
-
-If you want real-time Slack alerts on every event, configure the agent's webhook:
-
-1. In the agent's settings, set `webhook_url` to your deployed service's `/webhook/retell` URL — e.g. `https://retell-agent.onrender.com/webhook/retell`.
-2. Pick the `webhook_events` you want to subscribe to. The service alerts on every event it receives, so subscribe to whichever subset matters to you (commonly: `call_started`, `call_ended`, `call_analyzed`).
+1. Sign in at <https://dashboard.retellai.com>.
+2. Open **API Keys** → **Create API Key** → name it, copy the value. This is your `RETELL_API_KEY`.
+3. (Optional) Import or buy a phone number under **Phone Numbers** so `POST /calls` can dial. Set the E.164 form as `RETELL_FROM_NUMBER`. If you skip this, `POST /calls` requires `from_number` in every request body. Note: Retell-purchased numbers can only dial US recipients; for international, import a Twilio/SIP number.
+4. Configure your Retell agent's webhook (any subset of `call_started`, `call_ended`, `call_analyzed`, `transcript_updated`, transfer events) → `webhook_url = https://<your-deploy>/webhook/retell`.
 
 ---
 
-## 3. Fill in `.env`
+## 2. Slack
 
-Copy the template and paste the values you collected:
+The provider posts via `chat.postMessage` (not incoming webhooks) so the bot can pick its channel at request time.
+
+1. <https://api.slack.com/apps> → **Create New App** → **From scratch**. Name it (e.g. `retell-alerts`), pick a workspace.
+2. **OAuth & Permissions** → **Scopes → Bot Token Scopes** → add `chat:write`. Optionally add `chat:write.public` so the bot can post to public channels without being invited.
+3. **Install to Workspace** → approve. Copy the **Bot User OAuth Token** (`xoxb-…`). That's `SLACK_BOT_TOKEN`.
+4. In Slack, open the alert channel → `/invite @<your-app-name>` (skip if you have `chat:write.public`).
+5. The channel name **without** `#` is `SLACK_ALERT_CHANNEL`.
+
+Smoke test:
+```bash
+curl -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+  -H 'Content-Type: application/json; charset=utf-8' \
+  -d "{\"channel\": \"$SLACK_ALERT_CHANNEL\", \"text\": \"hello\"}" \
+  https://slack.com/api/chat.postMessage
+```
+
+---
+
+## 3. Discord — easiest, no app/scopes/review
+
+1. Create a server (top-left `+` → "Create My Own"), or use one you already have.
+2. Pick a channel (e.g. `#retell-alerts`) → click the gear ⚙ → **Integrations** → **Webhooks** → **New Webhook** → name it → **Copy Webhook URL**.
+3. URL shape: `https://discord.com/api/webhooks/<id>/<token>`. That's `DISCORD_WEBHOOK_URL` — the only credential.
+
+Smoke test:
+```bash
+curl -H 'Content-Type: application/json' \
+  -d '{"content":"hello"}' \
+  "$DISCORD_WEBHOOK_URL"
+```
+
+---
+
+## 4. Mattermost — Slack-compatible payloads
+
+Two paths — pick whichever's lighter for your environment.
+
+### 4a. Local Docker preview (60 seconds, no signup)
+```bash
+docker run --rm --name mattermost-preview -d \
+  --publish 8065:8065 \
+  mattermost/mattermost-preview
+```
+- Visit <http://localhost:8065> → create the **first** account (auto-becomes admin) → create a team and channel.
+- Top-left menu → **System Console** → **Integrations → Integration Management** → set **Enable Incoming Webhooks** = `true` → Save.
+- Back to your team → profile menu → **Integrations** → **Incoming Webhooks** → **Add** → pick the channel → Save → copy the URL.
+- URL shape: `http://localhost:8065/hooks/<hash>`.
+
+### 4b. Mattermost Cloud trial (real public URL, good for the deployed demo)
+Sign up at <https://mattermost.com/cloud-trial/>. Once you're in, the webhook setup steps from §4a from "Top-left menu →" onward are identical — just on `https://<workspace>.cloud.mattermost.com` instead of localhost.
+
+That URL is `MATTERMOST_WEBHOOK_URL`. Slack's `{text, attachments}` JSON shape works as-is — this provider reuses the Slack formatter under the hood.
+
+Smoke test:
+```bash
+curl -H 'Content-Type: application/json' \
+  -d '{"text":"hello from retell-agent"}' \
+  "$MATTERMOST_WEBHOOK_URL"
+# expected: ok
+```
+
+> **Production caveat.** If `MATTERMOST_WEBHOOK_URL` points at `localhost`, the deployed Render service can't reach it — either skip the env var on the deploy, or use Mattermost Cloud.
+
+---
+
+## 5. ClickUp — task comments
+
+Each Retell event becomes a comment on a single dedicated ClickUp task. Comments appear in the task's right-hand panel and update in real-time via websocket — visible without refresh.
+
+### 5.1 Token
+1. Sign up at <https://clickup.com> (free tier is fine).
+2. Avatar (bottom-left) → **Settings** → **Apps** → **API Token** → **Generate**. Copy the value (starts with `pk_…`). That's `CLICKUP_API_TOKEN`.
+
+### 5.2 Task ID
+1. Create (or pick) a Workspace → Space → List → a single Task (e.g. "Voice Call Event Log").
+2. Open the task. The URL is `https://app.clickup.com/t/<task_id>` — copy the part after `/t/`. That's `CLICKUP_TASK_ID`.
+
+Smoke test:
+```bash
+curl -X POST "https://api.clickup.com/api/v2/task/$CLICKUP_TASK_ID/comment" \
+  -H "Authorization: $CLICKUP_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"comment_text":"hello from retell-agent","notify_all":false}'
+```
+
+You should see the comment appear instantly in the task's UI.
+
+---
+
+## 6. Fill in `.env`
 
 ```bash
 cp .env.example .env
+$EDITOR .env
 ```
 
-Then edit `.env`:
-
-```env
-RETELL_API_KEY=<paste from §2.1>
-RETELL_BASE_URL=https://api.retellai.com
-RETELL_FROM_NUMBER=<paste from §2.2>
-
-SLACK_BOT_TOKEN=xoxb-<paste from §1.3>
-SLACK_BASE_URL=https://slack.com/api
-SLACK_ALERT_CHANNEL=<channel name without # from §1.4>
+Run the server and confirm via `/health`:
+```bash
+uv run uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
+curl -s http://localhost:8000/health
+# {"status":"ok","notifiers":["slack","discord","mattermost","clickup"]}
 ```
 
-That's everything. Head back to the [main README](README.md) to install dependencies and run the server.
+---
+
+## End-to-end smoke test (after the server is running)
+
+```bash
+curl -X POST http://localhost:8000/webhook/retell \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "event": "call_analyzed",
+    "call": {
+      "call_id": "smoke_001",
+      "agent_id": "<retell-agent-id>",
+      "call_status": "ended",
+      "duration_ms": 42000,
+      "disconnection_reason": "user_hangup",
+      "transcript": "Agent: Hi.\nUser: Hello.",
+      "call_analysis": {"call_summary": "smoke test", "user_sentiment": "Positive", "call_successful": true}
+    }
+  }'
+```
+
+Response:
+```json
+{"received": true, "delivered": {"slack": "ok", "discord": "ok", "mattermost": "ok", "clickup": "ok"}}
+```
+
+Each enabled destination gets one message in its native shape.
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
+| Symptom | Likely cause | Fix |
 |---|---|---|
-| `401 invalid_auth` from Slack | Wrong token, or you copied the **Signing Secret** instead | Re-copy the **Bot User OAuth Token** (`xoxb-…`) |
-| `not_in_channel` from Slack | Bot isn't a member of the target channel | `/invite @<bot>` in that channel, or add `chat:write.public` scope and reinstall |
-| `channel_not_found` from Slack | Wrong channel name in `.env` (don't include `#`, don't include the channel ID) | Use the human-readable name, e.g. `alerts` |
-| Retell returns `401` | Wrong or revoked API key | Generate a fresh one in §2.1 |
-| `400` from `POST /calls` saying `from_number not provided` | `RETELL_FROM_NUMBER` is unset and the request body didn't include `from_number` | Either set `RETELL_FROM_NUMBER` in `.env` or pass `from_number` in the body |
-| Retell returns `422 Unprocessable Content` | The `override_agent_id` doesn't exist under your API key, or the `from_number` isn't imported | Verify the agent ID in the dashboard; verify the number is in **Phone Numbers** |
-| Retell returns `402 Payment Required` | Trial credit exhausted | Upgrade the account or add a payment method |
+| `/health` shows `notifiers: []` | No env vars matched any provider's `is_configured()` rule | Re-check `.env` — every required var per provider must be present |
+| Slack: `not_in_channel` | Bot isn't a member of `SLACK_ALERT_CHANNEL` | `/invite @<bot>` in that channel, or add `chat:write.public` and reinstall |
+| Slack: `channel_not_found` | Wrong name in `.env` | Use the human-readable name without `#` |
+| Discord: 401 on webhook URL | URL was rotated or deleted | Recreate the webhook on the channel |
+| Mattermost: `Webhooks have been disabled` | System Console toggle off | System Console → Integrations → enable Incoming Webhooks |
+| ClickUp: `Team not authorized` | Used a workspace ID where a task ID was needed | Open the task in ClickUp; the ID is the part after `/t/` in the URL |
+| ClickUp: `validateListIDEx List ID invalid` | List/task ID confusion | List IDs are numeric (e.g. `901614781100`); task IDs are alphanumeric (e.g. `86d2w7fxf`). This service uses task IDs |
+| Retell: `Item +XXX not found from phone-number` | `RETELL_FROM_NUMBER` isn't imported into Retell | Import the number via SIP trunking (Twilio etc.) or buy from Retell |
+| Retell: `402 Payment Required` | Trial credit exhausted | Add a payment method on Retell |
+| Webhook returns 200 but nothing fires | Either no notifiers are enabled, or all of them failed silently | Check `delivered` map in response body; check server logs for per-provider error |

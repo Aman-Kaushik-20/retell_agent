@@ -1,69 +1,51 @@
-# Calling Agent
+# Calling Agent — multi-channel Retell event dispatcher
 
-A small FastAPI service that initiates outbound voice calls via **Retell AI** and posts a Slack alert for every webhook event Retell emits.
+A small **FastAPI** service that receives webhook events from **Retell AI** and fans each event out to every configured notification destination — concurrently, with per-provider error isolation.
+
+Currently supports four destinations:
+
+- **Slack** — `chat.postMessage` with colour-coded attachments
+- **Discord** — channel webhook with rich embeds
+- **Mattermost** — incoming webhook (Slack-compatible payload)
+- **ClickUp** — task comments (one comment per Retell event)
 
 ```
-┌────────┐  POST /calls   ┌──────────────┐  POST /v2/    ┌───────────┐
-│ Caller ├───────────────▶│ Calling      ├──────────────▶│ Retell AI │
-└────────┘                │ Agent        │ create-phone- └────┬──────┘
-                          │ (FastAPI)    │ call               │ webhook
-                          │              │◀───────────────────┘ on every event
-                          │              │   POST /webhook/retell
-                          │              │
-                          │              │  chat.postMessage   ┌───────┐
-                          │              ├────────────────────▶│ Slack │
-                          └──────────────┘                     └───────┘
+                                ┌──────────┐
+                                │ Slack    │
+                                └──────────┘
+                                ▲
+┌──────────┐  webhook   ┌───────┴──────┐    ┌──────────┐
+│ Retell AI├───────────▶│ Calling      ├───▶│ Discord  │
+└──────────┘  per-event │ Agent        │    └──────────┘
+                        │ (FastAPI)    │    ┌──────────┐
+                        │              ├───▶│Mattermost│
+                        │              │    └──────────┘
+                        │              │    ┌──────────┐
+                        │              ├───▶│ ClickUp  │
+                        └──────────────┘    └──────────┘
 ```
 
-The webhook receiver also has a sibling endpoint, `POST /alerts/{call_id}`, for **manually** triggering a Slack alert for any past call — handy when you don't want to expose your localhost via ngrok during development.
+A provider is enabled when its env vars are present; missing vars silently disable it. `GET /health` reports which destinations are live.
 
----
-
-## Prerequisites
-
-- **Python 3.12+** (`.python-version` pins `3.12`)
-- **[uv](https://docs.astral.sh/uv/)** for dependency management (`pipx install uv` or see uv's docs)
-- A Retell account with an imported phone number and at least one agent, plus a Slack workspace where you can install an app — see **[SETUP.md](SETUP.md)** for the walkthrough.
+A sibling endpoint `POST /alerts/{call_id}` triggers the same fan-out manually for any past Retell `call_id` — handy when developing locally without exposing your laptop via ngrok.
 
 ---
 
 ## Quickstart
 
-### 1. Get your credentials
-
-Follow **[SETUP.md](SETUP.md)** to obtain:
-
-- `RETELL_API_KEY` — Retell dashboard
-- `RETELL_FROM_NUMBER` — an E.164 number you've imported into Retell (optional default for `POST /calls`)
-- `SLACK_BOT_TOKEN` — Slack app (`xoxb-…`)
-- `SLACK_ALERT_CHANNEL` — channel name (no `#`) where the bot is a member
-- An `agent_id` from a Retell agent you've configured (only needed when overriding the agent bound to your number)
-
-### 2. Clone and set up the environment
-
 ```bash
 git clone <this-repo>
 cd retell_agent
 
-# Install dependencies into a local .venv
 uv sync
 
-# Copy and fill in the env template
 cp .env.example .env
-$EDITOR .env           # paste the values from SETUP.md
-```
+$EDITOR .env       # fill in any subset of provider credentials
 
-### 3. Run the server
-
-```bash
 uv run uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-The service listens on **<http://localhost:8000>**.
-
-### 4. Open the API docs
-
-Visit **<http://localhost:8000/docs>** — interactive Swagger UI with summaries, schemas, and ready-to-send example payloads for every endpoint.
+Open Swagger UI at <http://localhost:8000/docs>. Hit `/health` to confirm which notifiers your env enabled.
 
 ---
 
@@ -71,48 +53,85 @@ Visit **<http://localhost:8000/docs>** — interactive Swagger UI with summaries
 
 | Method | Path | What it does |
 |---|---|---|
-| `GET`  | `/health` | Liveness probe. |
-| `POST` | `/calls` | Initiate an outbound call via Retell. Returns the `call_id`. |
-| `GET`  | `/calls/{call_id}` | Fetch the full call record from Retell (status, transcript, telephony, analysis, recording). |
-| `POST` | `/alerts/{call_id}` | Manually fetch a call and post a `call_analyzed`-shaped Slack alert (always sends). |
-| `POST` | `/webhook/retell` | Retell's webhook receiver. Posts a Slack alert for every event (`call_started`, `call_ended`, `call_analyzed`, `transcript_updated`, `transfer_*`). Always returns `200`. |
+| `GET`  | `/health` | Liveness probe. Body: `{status, notifiers: [...]}`. |
+| `POST` | `/calls` | Initiate an outbound call via Retell. Returns the registered `call_id`. |
+| `GET`  | `/calls/{call_id}` | Fetch the full call record from Retell (status / transcript / analysis / recording / cost). |
+| `POST` | `/alerts/{call_id}` | Manually fan a `call_analyzed`-shaped notification out to every enabled provider. |
+| `POST` | `/webhook/retell` | Retell's webhook receiver. Fans every event out to every enabled provider. Always returns 200. |
 
-### Quick test (after the server is running)
+The webhook + manual-alert responses both include a `delivered` map reporting per-provider outcome:
 
-```bash
-# Place a call (immediate; uses RETELL_FROM_NUMBER from .env)
-curl -X POST http://localhost:8000/calls \
-  -H 'Content-Type: application/json' \
-  -d '{"to_number": "+91XXXXXXXXXX"}'
-
-# Place a call with an explicit agent override
-curl -X POST http://localhost:8000/calls \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "to_number": "+91XXXXXXXXXX",
-    "from_number": "+14157774444",
-    "override_agent_id": "<retell-agent-id>"
-  }'
-
-# Manually alert Slack for an existing call
-curl -X POST http://localhost:8000/alerts/<call_id>
+```json
+{"received": true, "delivered": {"slack": "ok", "discord": "ok", "mattermost": "ok", "clickup": "ok"}}
 ```
-
-For the full set of example bodies (dynamic prompt variables, agent-version pinning, etc.), use the dropdown in the Swagger UI at `/docs`.
 
 ---
 
-## Local development vs. live webhook
+## Provider setup
 
-Retell's webhook posts to a public URL — your `localhost` is not reachable. So:
+Each provider is independent — set up only the ones you want. See **[SETUP.md](SETUP.md)** for screenshot-level walkthroughs of all four.
 
-- **Locally** — use `POST /alerts/{call_id}`. After a call finishes on Retell, run the curl below and the Slack alert fires for that call. No tunnel, no public URL needed.
+| Provider | Env vars | Credentials |
+|---|---|---|
+| Slack | `SLACK_BOT_TOKEN`, `SLACK_BASE_URL`, `SLACK_ALERT_CHANNEL` | Bot User OAuth Token (`xoxb-…`) with `chat:write`. Bot must be in the target channel. |
+| Discord | `DISCORD_WEBHOOK_URL` | Channel → Edit Channel → Integrations → Webhooks → New. The URL is the only credential. |
+| Mattermost | `MATTERMOST_WEBHOOK_URL` | Incoming webhook URL — local Docker preview, Mattermost Cloud trial, or self-hosted. Slack-compatible JSON shape. |
+| ClickUp | `CLICKUP_API_TOKEN`, `CLICKUP_TASK_ID` | Personal API token (`pk_…`) + the ID of the task that should receive comments. |
+
+Retell credentials remain required to fetch call data:
+
+| Var | Required | Default |
+|---|---|---|
+| `RETELL_API_KEY` | yes | — |
+| `RETELL_BASE_URL` | no | `https://api.retellai.com` |
+| `RETELL_FROM_NUMBER` | no | optional default for `POST /calls` |
+
+---
+
+## How fan-out works
+
+```python
+# src/services/notifier_service.py
+async def fanout(self, event, call) -> dict[str, str]:
+    results = await asyncio.gather(
+        *(n.send(event, call) for n in self.notifiers),
+        return_exceptions=True,
+    )
+    return {n.name: ("ok" if not isinstance(r, Exception) else f"error: {r!r}")
+            for n, r in zip(self.notifiers, results)}
+```
+
+- **All providers fire concurrently** via `asyncio.gather`.
+- `return_exceptions=True` isolates per-provider failures — Slack 401-ing won't stop Discord from posting.
+- Every error is logged with the provider name and event/call IDs.
+- The webhook handler always returns 200 to Retell regardless of any provider failure (Retell otherwise retries up to 3×).
+
+Each provider implements the same minimal surface:
+
+```python
+class XProvider:
+    name: str
+    async def send(event: WebhookEventType, call: CallObject) -> None: ...
+    async def close() -> None: ...
+```
+
+---
+
+## Local development vs. deployed webhook
+
+Retell only POSTs to public URLs — `localhost` is unreachable. So:
+
+- **Local**: use `POST /alerts/{call_id}`. After a call completes on Retell, run the curl below and the fan-out fires for that call. No tunnel needed.
 
   ```bash
   curl -X POST http://localhost:8000/alerts/<call_id>
   ```
 
-- **For real-time events** — deploy the service (see [Deployment](#deployment)) and configure your Retell agent with `webhook_url = https://<your-app>.onrender.com/webhook/retell` and the events you want (`call_started`, `call_ended`, `call_analyzed`, etc.). From then on, every subscribed event hits your live `/webhook/retell` and triggers a Slack alert automatically.
+- **Deployed**: configure the Retell agent's `webhook_url = https://<your-app>/webhook/retell` and the events you want (`call_started`, `call_ended`, `call_analyzed`, `transcript_updated`, transfer events). Every subscribed event hits your service and fans out automatically.
+
+A live deployment exists at `https://retell-agent-6ark.onrender.com` (Render free tier).
+
+> **Mattermost note:** if you point at a local Docker preview (`http://localhost:8065/...`), the deployed instance can't reach it. Either skip `MATTERMOST_WEBHOOK_URL` on the deploy, or use Mattermost Cloud / a public self-host.
 
 ---
 
@@ -121,67 +140,59 @@ Retell's webhook posts to a public URL — your `localhost` is not reachable. So
 ```
 retell_agent/
 ├── README.md              # this file
-├── SETUP.md               # credential walkthrough (Slack + Retell)
+├── SETUP.md               # credential walkthroughs (Slack + Discord + Mattermost + ClickUp + Retell)
 ├── pyproject.toml         # deps + Python pin
-├── uv.lock
 ├── .env.example
-├── docs/img/              # screenshots referenced from SETUP.md
+├── docs/img/
 └── src/
-    ├── main.py            # FastAPI app, lifespan, router registration
+    ├── main.py            # FastAPI app, lifespan, conditional notifier construction
     ├── config.py          # pydantic-settings; loads .env
-    ├── models/            # pydantic schemas (Retell request/response/webhook, Slack message)
-    ├── providers/         # async httpx clients (one per upstream)
-    ├── services/          # orchestration: CallService, AlertService
-    ├── routes/            # FastAPI routers: calls, alerts, webhook, health
-    └── utils/             # logger + OpenAPI metadata strings
+    ├── models/
+    │   ├── retell.py      # CallStatus, WebhookEventType, DisconnectionReason, CallObject, ...
+    │   └── slack.py       # Slack-compatible attachment/message shapes (also used by Mattermost)
+    ├── providers/
+    │   ├── retell.py      # Retell HTTP client (calls + executions)
+    │   ├── slack.py       # Slack notifier
+    │   ├── discord.py     # Discord notifier
+    │   ├── mattermost.py  # Mattermost notifier (reuses Slack formatter)
+    │   ├── clickup.py     # ClickUp notifier (task comments)
+    │   └── _attachment.py # shared Slack/Mattermost attachment builder
+    ├── services/
+    │   ├── call_service.py
+    │   └── notifier_service.py  # fan-out via asyncio.gather
+    ├── routes/            # calls, alerts, webhook, health
+    └── utils/             # logger + OpenAPI metadata
 ```
 
-The split is deliberate: routes call services, services call providers, providers are pure HTTP clients. No layer reaches around another.
+The split is deliberate: routes call services, services call providers, providers are pure HTTP clients. Each provider owns both its HTTP and its formatter.
 
 ---
 
 ## Deployment
 
-This is a single FastAPI app — it'll run on any Python host. Below are the steps for **[Render](https://render.com)** (free tier works):
+This is a single FastAPI app — runs anywhere Python does. Steps for **[Render](https://render.com)** (free tier):
 
-1. Push the repo to GitHub.
-2. On Render: **New → Web Service**, connect the GitHub repo.
+1. Push to GitHub.
+2. Render → **New → Web Service**, connect the repo.
 3. Configure:
-   - **Runtime:** Python
-   - **Build command:** `pip install uv && uv sync --frozen`
-   - **Start command:** `uv run uvicorn src.main:app --host 0.0.0.0 --port $PORT`
-4. Under **Environment**, add the same variables you set in `.env` (`RETELL_API_KEY`, `RETELL_BASE_URL`, `RETELL_FROM_NUMBER`, `SLACK_BOT_TOKEN`, `SLACK_BASE_URL`, `SLACK_ALERT_CHANNEL`).
-5. Deploy. Render gives you a URL like `https://retell-agent.onrender.com`.
-6. In the Retell dashboard, open your agent → set `webhook_url` to:
-
-   ```
-   https://<your-app>.onrender.com/webhook/retell
-   ```
-
-   and pick the events you want (`call_started`, `call_ended`, `call_analyzed`, `transcript_updated`, transfer events).
-
-Retell will now POST to your live service for every subscribed event, and the Slack alert fires automatically.
+   - **Runtime**: Python
+   - **Build command**: `pip install uv && uv sync --frozen`
+   - **Start command**: `uv run uvicorn src.main:app --host 0.0.0.0 --port $PORT`
+4. Environment: paste in whichever provider env vars you want enabled in production. Skip the rest — they auto-disable.
+5. Deploy. Take the resulting URL and set `webhook_url = https://<your-app>/webhook/retell` on your Retell agent.
 
 ---
 
 ## Future scope
 
-Things deliberately left out to keep the surface area minimal for this assignment:
+Deliberately not built — confirm before adding:
 
-- **Authentication / authorization.** All endpoints are open right now — anyone who can reach the server can place calls or trigger alerts. Fine for a local / sandboxed deployment, not fine for production. The natural additions are an `X-API-Key` header check on `/calls` and `/alerts/{call_id}`, or full Bearer/JWT auth via `fastapi.security` if this ever sits behind a real client. `/webhook/retell` is a separate concern — it should verify the `x-retell-signature` header (or, simpler, an IP allowlist of `100.20.5.228`).
+- **Authentication** on `/calls` and `/alerts/{call_id}`. Currently open.
+- **Webhook signature verification** for Retell's `x-retell-signature` header.
+- **Per-request routing** (`notify_to: ["slack","discord"]` knob on `/alerts/{call_id}`) to fan out to a subset.
+- **Retries / dead-letter** when a provider fails. Currently we log and move on.
+- **Scheduled calls.** Retell has no scheduling API.
+- **Agent provisioning.** Retell agents created via dashboard.
+- **Batch endpoints** (`/batch_calls`, `/batch_alerts`).
 
-- **Scheduled calls.** Retell's `POST /v2/create-phone-call` has no scheduled-time field; calls fire immediately. If scheduling is needed, queue it in this service (asyncio task / APScheduler / job queue) and fire the Retell call at the scheduled instant.
-
-- **Agent provisioning.** A `POST /agents` endpoint that creates a Retell agent with our `webhook_url` and `webhook_events` pre-wired would remove a manual dashboard step. Skipped for now per scope.
-
-- **Batch endpoints.** Single-call/single-alert is the spec. If usage grows, the natural extensions are:
-  - `POST /batch_calls` — accept a list of `CallRequestModel` and fan out via `asyncio.TaskGroup` with a `Semaphore` to cap concurrency against Retell's rate limits.
-  - `POST /batch_alerts` — accept a list of `call_id`s and trigger alerts in parallel.
-
-  None are implemented; sketches live in `temp/improvements.md`.
-
----
-
-## Troubleshooting
-
-The most common errors (token mistakes, channel membership, missing `from_number`) are documented in **[SETUP.md](SETUP.md#troubleshooting)**.
+Sketches in [temp/improvements.md](temp/improvements.md).

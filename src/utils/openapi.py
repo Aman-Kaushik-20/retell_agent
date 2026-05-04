@@ -7,22 +7,26 @@ API_DESCRIPTION = """
 Backend integration that:
 
 1. Initiates outbound voice calls via the **Retell AI** API.
-2. Receives Retell's webhook events and posts a **Slack** alert for every event.
-3. Exposes a manual alert endpoint so a Slack message can be triggered for any past `call_id`.
+2. Receives Retell's webhook events and **fans them out to every configured notifier**:
+   Slack, Discord, Mattermost, and ClickUp (task comments).
+3. Exposes a manual alert endpoint so a notification can be triggered for any past `call_id`.
+
+A notifier is enabled when its env vars are set; missing vars silently disable that provider.
+`/health` returns the live list of enabled notifiers.
 
 **Tags**
 
 - `calls` — initiate / fetch calls on Retell.
-- `alerts` — manually trigger a Slack alert for an existing call.
+- `alerts` — manually fan out a notification for an existing call.
 - `webhook` — Retell webhook receiver (called by Retell, not by you).
-- `health` — liveness probe.
+- `health` — liveness probe + enabled-notifier inventory.
 """
 
 OPENAPI_TAGS = [
     {"name": "calls", "description": "Initiate outbound calls and fetch their full record from Retell."},
-    {"name": "alerts", "description": "Manually trigger a Slack alert for a call_id (fetches from Retell, then posts to Slack)."},
-    {"name": "webhook", "description": "Receives every Retell webhook event and posts a corresponding alert to Slack."},
-    {"name": "health", "description": "Liveness probe."},
+    {"name": "alerts", "description": "Manually fan out a notification for a call_id across all enabled notifiers."},
+    {"name": "webhook", "description": "Receives every Retell webhook event and fans it out to every enabled notifier."},
+    {"name": "health", "description": "Liveness probe + list of enabled notifiers."},
 ]
 
 
@@ -90,45 +94,66 @@ GET_CALL_RESPONSES = {
 
 # ─── POST /alerts/{call_id} ───────────────────────────────────────────────────
 
-ALERT_SUMMARY = "Manually trigger a Slack alert for a call"
+ALERT_SUMMARY = "Manually fan out a notification for a call"
 ALERT_DESCRIPTION = (
-    "Fetches the call from Retell, then posts a `call_analyzed`-style alert "
-    "to the configured Slack channel — regardless of the call's current status. "
-    "Useful for backfills or when the webhook didn't fire."
+    "Fetches the call from Retell, then fans a `call_analyzed`-shaped notification "
+    "out to every enabled notifier (Slack / Discord / Mattermost / ClickUp). "
+    "Sends regardless of the call's current status. Useful for backfills or "
+    "when the webhook didn't fire (e.g. local dev without a tunnel)."
 )
 ALERT_RESPONSES = {
     200: {
-        "description": "Alert sent.",
+        "description": "Notification fan-out attempted. `delivered` reports per-provider outcome.",
         "content": {
             "application/json": {
                 "example": {
                     "sent": True,
                     "call_id": "119c3f8e47135a29e65947eeb34cf12d",
                     "call_status": "ended",
+                    "delivered": {
+                        "slack": "ok",
+                        "discord": "ok",
+                        "mattermost": "ok",
+                        "clickup": "ok",
+                    },
                 }
             }
         },
     },
     422: {"description": "No call exists with this id under your API key."},
-    502: {"description": "Retell is unreachable, or Slack rejected the post."},
+    502: {"description": "Retell is unreachable."},
 }
 
 
 # ─── POST /webhook/retell ─────────────────────────────────────────────────────
 
-WEBHOOK_SUMMARY = "Retell webhook receiver"
+WEBHOOK_SUMMARY = "Retell webhook receiver (fan-out)"
 WEBHOOK_DESCRIPTION = (
     "Retell calls this endpoint on every subscribed event. The handler:\n\n"
     "1. Parses the `{event, call}` envelope.\n"
-    "2. Posts a formatted Slack alert tailored to the event type "
-    "(`call_started`, `call_ended`, `call_analyzed`, `transcript_updated`, "
-    "`transfer_started`, `transfer_bridged`, `transfer_cancelled`, `transfer_ended`).\n\n"
-    "Always returns 200 OK so Retell does not retry."
+    "2. Fans the event out concurrently to every enabled notifier "
+    "(Slack / Discord / Mattermost / ClickUp). One provider failing does not affect the others.\n"
+    "3. Each provider formats the message in its native shape: Slack/Mattermost as colour-coded "
+    "attachments, Discord as embeds, ClickUp as a task comment.\n\n"
+    "Always returns 200 OK so Retell does not retry. The response body's `delivered` map "
+    "reports per-provider outcome (`ok` or `error: …`)."
 )
 WEBHOOK_RESPONSES = {
     200: {
-        "description": "Acknowledged. The Slack alert may or may not have been sent.",
-        "content": {"application/json": {"example": {"received": True}}},
+        "description": "Acknowledged. `delivered` reports per-provider outcome.",
+        "content": {
+            "application/json": {
+                "example": {
+                    "received": True,
+                    "delivered": {
+                        "slack": "ok",
+                        "discord": "ok",
+                        "mattermost": "ok",
+                        "clickup": "ok",
+                    },
+                }
+            }
+        },
     }
 }
 WEBHOOK_OPENAPI_EXTRA = {
@@ -210,6 +235,21 @@ WEBHOOK_OPENAPI_EXTRA = {
 
 # ─── GET /health ──────────────────────────────────────────────────────────────
 
-HEALTH_SUMMARY = "Liveness probe"
-HEALTH_DESCRIPTION = "Returns `{\"status\": \"ok\"}` if the process is up. No upstream calls."
-HEALTH_RESPONSES = {200: {"content": {"application/json": {"example": {"status": "ok"}}}}}
+HEALTH_SUMMARY = "Liveness probe + enabled-notifier inventory"
+HEALTH_DESCRIPTION = (
+    "Returns `{\"status\": \"ok\", \"notifiers\": [...]}` if the process is up. "
+    "The `notifiers` list reports which destinations a webhook will fan out to "
+    "(based on which env vars are set). No upstream calls."
+)
+HEALTH_RESPONSES = {
+    200: {
+        "content": {
+            "application/json": {
+                "example": {
+                    "status": "ok",
+                    "notifiers": ["slack", "discord", "mattermost", "clickup"],
+                }
+            }
+        }
+    }
+}
