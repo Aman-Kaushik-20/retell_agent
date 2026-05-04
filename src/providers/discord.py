@@ -101,7 +101,7 @@ class DiscordProvider:
             # surfaces as HTML 429s with multi-minute retry_after.
             headers={
                 "Content-Type": "application/json",
-                "User-Agent": "retell-agent/0.3 (+https://retell-agent-6ark.onrender.com)",
+                "User-Agent": "retell-agent/0.3 (+https://retell-agent-6ark.onrender.com) 2",
             },
         )
 
