@@ -96,7 +96,13 @@ class DiscordProvider:
         self.webhook_url = settings.discord_webhook_url
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(10.0, connect=5.0),
-            headers={"Content-Type": "application/json"},
+            # Identifiable User-Agent — Discord's edge (Cloudflare) flags the
+            # default python-httpx UA from cloud IPs as bot traffic, which
+            # surfaces as HTML 429s with multi-minute retry_after.
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "retell-agent/0.3 (+https://retell-agent-6ark.onrender.com)",
+            },
         )
 
     async def close(self) -> None:

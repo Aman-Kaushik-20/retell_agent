@@ -21,6 +21,7 @@ class SlackProvider:
             headers={
                 "Authorization": f"Bearer {self.token}",
                 "Content-Type": "application/json; charset=utf-8",
+                "User-Agent": "retell-agent/0.3",
             },
         )
 

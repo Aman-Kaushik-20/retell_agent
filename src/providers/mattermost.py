@@ -16,7 +16,10 @@ class MattermostProvider:
         self.webhook_url = settings.mattermost_webhook_url
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(10.0, connect=5.0),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "retell-agent/0.3",
+            },
         )
 
     async def close(self) -> None:

@@ -57,6 +57,7 @@ class ClickUpProvider:
             headers={
                 "Authorization": settings.clickup_api_token,
                 "Content-Type": "application/json",
+                "User-Agent": "retell-agent/0.3",
             },
         )
 
